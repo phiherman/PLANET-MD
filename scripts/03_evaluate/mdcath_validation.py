@@ -141,14 +141,14 @@ for i, (feats, labels) in enumerate(
 ):
     key = adl.dataset.samples[adl.val_data.indices[i]]
     key_under = key.replace("/", "_")
-    rdict = run_inference(model, feats)
+    rdict = run_inference(model, feats, device=device)
     valid_results[key] = rdict
     valid_labels[key] = labels
 
 for i, (feats, labels) in enumerate(tqdm(adl.test_data, desc="Evaluating test set...")):
     key = adl.dataset.samples[adl.test_data.indices[i]]
     key_under = key.replace("/", "_")
-    rdict = run_inference(model, feats)
+    rdict = run_inference(model, feats, device=device)
     test_results[key] = rdict
     test_labels[key] = labels
 
