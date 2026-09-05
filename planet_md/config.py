@@ -13,7 +13,8 @@ load_dotenv()
 configure_logger(os.getenv("LOGURU_LEVEL", "INFO"))
 
 # Paths
-PROJ_ROOT = Path(__file__).resolve().parents[1]
+_planet_md_dir_env = os.getenv("PLANET_MD_DIR")
+PROJ_ROOT = Path(_planet_md_dir_env) if _planet_md_dir_env else Path(__file__).resolve().parents[1]
 logger.debug(f"PROJ_ROOT path is: {PROJ_ROOT}")
 
 DATA_DIR = PROJ_ROOT / "data"

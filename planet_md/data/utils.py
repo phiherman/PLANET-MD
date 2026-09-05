@@ -143,6 +143,11 @@ class MDDataset(Dataset):
         super().__init__()
         self._pdb_file_map = {}
         self._path = processed_h5
+        if not self._path.exists() or not self._path.is_file():
+            raise FileNotFoundError(
+                f"Processed H5 file not found at {self._path}. Run the "
+                "scripts/01_preprocess pipeline for this dataset before evaluation."
+            )
         self._handle = h5py.File(self._path, "r")
 
         self._use_seq = seq_features
