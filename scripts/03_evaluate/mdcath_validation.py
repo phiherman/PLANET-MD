@@ -44,7 +44,13 @@ plt.rcParams.update(
 
 parser = argparse.ArgumentParser(description="Evaluate PLANET-MD model")
 parser.add_argument("eval_key", type=str, help="Key for the evaluation")
-parser.add_argument("model", type=str, help="Path to the model checkpoint")
+parser.add_argument(
+    "model",
+    type=str,
+    default="v1",
+    nargs="?",
+    help="Checkpoint alias or path (default: v1)",
+)
 parser.add_argument("config_file", type=str, help="Path to the config file")
 parser.add_argument(
     "--split", choices=["valid", "test"], default="test", help="Split to evaluate"
@@ -52,25 +58,13 @@ parser.add_argument(
 parser.add_argument(
     "--device", type=str, default="cuda:0", help="Device to use for inference"
 )
-# args = parser.parse_args()
+args = parser.parse_args()
 
-# EVAL_KEY = args.eval_key
-# CONFIG_FILE = args.config_file
-# CHECKPOINT_FILE = args.model
-# device = args.device
-# split = args.split
-
-EVAL_KEY = "mdcath_large_ep10"
-CONFIG_FILE = str(
-    Path(os.environ.get("PLANET_MD_DIR", str(Path.home() / "PLANET-MD")))
-    / "configs/20250519_mdcath_large.yml"
-)
-CHECKPOINT_FILE = str(
-    Path(os.environ.get("PLANET_MD_DIR", str(Path.home() / "PLANET-MD")))
-    / "models/full_model_mdcath_5/model-epoch=10-val_loss=0.80151.pt.ckpt"
-)
-device = "cuda:0"
-split = "valid"
+EVAL_KEY = args.eval_key
+CONFIG_FILE = args.config_file
+CHECKPOINT_FILE = args.model
+device = args.device
+split = args.split
 
 # EVAL_KEY = "large_model_20250427"
 # CONFIG_FILE = str(Path(os.environ.get("PLANET_MD_DIR", str(Path.home() / "PLANET-MD"))) / "configs/20250426_cadist_fixed.yml")
@@ -108,7 +102,9 @@ ads = adl.dataset
 
 # %% Load model
 logger.info("Loading model...")
-model = PlanetMDModel.load_from_checkpoint(CHECKPOINT_FILE, strict=True)
+model = PlanetMDModel.load_from_checkpoint(
+    CHECKPOINT_FILE, strict=True, HF_TOKEN=os.environ.get("HF_TOKEN")
+)
 model = model.to(device)
 
 

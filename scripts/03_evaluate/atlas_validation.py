@@ -43,7 +43,13 @@ plt.rcParams.update(
 
 parser = argparse.ArgumentParser(description="Evaluate PLANET-MD model")
 parser.add_argument("eval_key", type=str, help="Key for the evaluation")
-parser.add_argument("model", type=str, help="Path to the model checkpoint")
+parser.add_argument(
+    "model",
+    type=str,
+    default="v1",
+    nargs="?",
+    help="Checkpoint alias or path (default: v1)",
+)
 parser.add_argument("config_file", type=str, help="Path to the config file")
 parser.add_argument(
     "--split", choices=["valid", "test"], default="valid", help="Split to evaluate"
@@ -92,7 +98,9 @@ ads = adl.dataset
 
 # %% Load model
 logger.info("Loading model...")
-model = PlanetMDModel.load_from_checkpoint(CHECKPOINT_FILE, strict=True)
+model = PlanetMDModel.load_from_checkpoint(
+    CHECKPOINT_FILE, strict=True, HF_TOKEN=os.environ.get("HF_TOKEN")
+)
 model = model.to(device)
 
 
