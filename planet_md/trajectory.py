@@ -172,7 +172,7 @@ def compute_generalized_correlation_lmi(
     return dyncorr.gcc_allreplicas["rep_0"]["gcc_lmi"]
 
 
-def compute_autocorrelation_DEPRECATED(
+def compute_autocorrelation(
     traj: md.Trajectory,
     lag: int = 1,
     atom_indices: list = None,

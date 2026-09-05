@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from planet_md import config
 from planet_md.esm3 import get_model, get_tokenizers
-from planet_md.features import esm3_sequence
+from planet_md.features import esm3_chain_sequence
 from planet_md.structure.protein_chain import ProteinChain
 
 ATLAS_DATA_DIR = config.RAW_DATA_DIR / "atlas"
@@ -31,6 +31,6 @@ with torch.inference_mode():
             continue
         os.makedirs(seq_file.parent, exist_ok=True)
         chain = ProteinChain.from_pdb(pdb_file)
-        seq_embedding = esm3_sequence(chain, model, tokenizers)
+        seq_embedding = esm3_chain_sequence(chain, model, tokenizers)
         torch.save(seq_embedding, seq_file)
 # %%

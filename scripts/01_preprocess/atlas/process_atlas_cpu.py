@@ -3,7 +3,7 @@ import gc
 import sys
 
 import mdtraj as md
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets
 from loguru import logger
 from tqdm import tqdm
 
@@ -135,28 +135,27 @@ for pdb_id in tqdm(pdb_reps):
 logger.info("Creating HuggingFace dataset")
 ds = Dataset.from_dict(invert_dict(results))
 logger.info(f"Dataset created with {len(ds)} samples")
-out_path = ATLAS_PROCESSED_DATA_DIR / "atlas_derivatives_v2_4162_4167"
+out_path = ATLAS_PROCESSED_DATA_DIR / f"atlas_derivatives_v2_{I_START}_{I_STOP}"
 logger.info(f"Saving dataset to {out_path}")
 ds.save_to_disk(str(out_path))
 # logger.info(f"Saved to {out_path}")
 
 # %% Join data sets from different initializations
-# logger.info("Joining datasets")
+# NOTE: `subsets` must list every (I_START, I_STOP) chunk range this run actually
+# produced -- update it per-invocation to match the ranges passed on the command
+# line (Plan 01-08's full-dataset run will have a different, longer list than the
+# single-chunk tracer range below).
+logger.info("Joining datasets")
 
-# subsets = [
-#     (0, 1000),
-#     (1000, 2000),
-#     (2000, 3000),
-#     (3000, 4000),
-#     (4000, 5000),
-#     (4162, 4167),
-# ]
-# all_ds = []
-# for s0, s1 in subsets:
-#     ds = Dataset.load_from_disk(
-#         str(ATLAS_PROCESSED_DATA_DIR / f"atlas_derivatives_v2_{s0}_{s1}")
-#     )
-#     all_ds.append(ds)
+subsets = [
+    (I_START, I_STOP),
+]
+all_ds = []
+for s0, s1 in subsets:
+    ds = Dataset.load_from_disk(
+        str(ATLAS_PROCESSED_DATA_DIR / f"atlas_derivatives_v2_{s0}_{s1}")
+    )
+    all_ds.append(ds)
 
-# all_ds = concatenate_datasets(all_ds)
-# all_ds.save_to_disk(str(ATLAS_PROCESSED_DATA_DIR / "atlas_derivatives_v2"))
+all_ds = concatenate_datasets(all_ds)
+all_ds.save_to_disk(str(ATLAS_PROCESSED_DATA_DIR / "atlas_derivatives_v2"))
