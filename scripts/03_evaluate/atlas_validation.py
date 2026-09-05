@@ -256,16 +256,26 @@ def compute_metric_single(key, target, pred):
     target = {k: v.cpu().numpy() for k, v in target.items()}
     pred = {k: v.cpu().numpy() for k, v in pred.items()}
 
+    # RMSF is stored/predicted in raw MDTraj nanometers (planet_md/trajectory.py's
+    # compute_rmsf calls md.rmsf(), whose native output unit is nm), but the paper
+    # reports RMSF in Angstroms. Empirically confirmed on the tracer data (Plans
+    # 01-04/01-05): target["rmsf"].max() = 1.03/1.01/1.25 (ATLAS, per-rep) and
+    # 1.6994 (mdCATH) -- nm-scale, not already Angstrom-scale. Convert both target
+    # and prediction to Angstroms (x10) before any RMSF comparison so Plan 01-11's
+    # scalar summary is unit-correct against the paper's Table 1/A1 numbers.
+    target_rmsf_angstrom = target["rmsf"] * 10.0
+    pred_rmsf_angstrom = pred["rmsf"] * 10.0
+
     # Compute RMSF metrics
-    pearson_corr, pearson_p = pearson(target["rmsf"], pred["rmsf"])
-    spearman_corr, spearman_p = spearman(target["rmsf"], pred["rmsf"])
+    pearson_corr, pearson_p = pearson(target_rmsf_angstrom, pred_rmsf_angstrom)
+    spearman_corr, spearman_p = spearman(target_rmsf_angstrom, pred_rmsf_angstrom)
     metrics.update(
         {
             "rmsf_pearson_r": pearson_corr,
             "rmsf_pearson_p": pearson_p,
             "rmsf_spearman_r": spearman_corr,
             "rmsf_spearman_p": spearman_p,
-            "rmsf_mse": mse(target["rmsf"], pred["rmsf"]),
+            "rmsf_mse": mse(target_rmsf_angstrom, pred_rmsf_angstrom),
         }
     )
 
