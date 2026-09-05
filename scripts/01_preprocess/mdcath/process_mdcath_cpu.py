@@ -2,7 +2,7 @@
 import gc
 import sys
 
-from datasets import Dataset
+from datasets import Dataset, concatenate_datasets
 from loguru import logger
 from tqdm import tqdm
 
@@ -144,25 +144,24 @@ ds.save_to_disk(str(out_path))
 # logger.info(f"Saved to {out_path}")
 
 # %% Join data sets from different initializations
-# logger.info("Joining datasets")
+# NOTE (tracer, Plan 01-05): `subsets` must list every (I_START, I_STOP) chunk
+# range this run actually produced -- update it per-invocation to match the
+# ranges passed on the command line (Plan 01-09's full-dataset run will have a
+# different, longer list than the single-chunk tracer range below). Mirrors
+# the same fix already applied to scripts/01_preprocess/atlas/process_atlas_cpu.py
+# in Plan 01-04.
+logger.info("Joining datasets")
 
-# subsets = [
-#     (0, 16200),
-#     (16200, 32400),
-#     (32400, 48600),
-#     (48600, 64800),
-#     (64800, 81000),
-#     (81000, 97200),
-#     (97200, 113400),
-#     (113400, 129600),
-# ]
-# all_ds = []
-# for s0, s1 in subsets:
-#     ds = Dataset.load_from_disk(
-#         str(MDCATH_PROCESSED_DATA_DIR / f"mdcath_derivatives_v2_{s0}_{s1}")
-#     )
-#     all_ds.append(ds)
+subsets = [
+    (I_START, I_STOP),
+]
+all_ds = []
+for s0, s1 in subsets:
+    ds = Dataset.load_from_disk(
+        str(MDCATH_PROCESSED_DATA_DIR / f"mdcath_derivatives_v2_{s0}_{s1}")
+    )
+    all_ds.append(ds)
 
-# all_ds = concatenate_datasets(all_ds)
-# all_ds.save_to_disk(str(MDCATH_PROCESSED_DATA_DIR / "mdcath_derivatives_v2"))
+all_ds = concatenate_datasets(all_ds)
+all_ds.save_to_disk(str(MDCATH_PROCESSED_DATA_DIR / "mdcath_derivatives_v2"))
 # %%
