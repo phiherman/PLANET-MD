@@ -15,6 +15,7 @@ from tqdm import tqdm
 from planet_md import config
 from planet_md.data.atlas import ATLASDataModule
 from planet_md.metrics import (
+    graph_diffusion_distance,
     ipsen_mikhailov_distance,
     kl_divergence_2d,
     mae,
@@ -94,6 +95,12 @@ adl = ATLASDataModule(
     struct_stage=PARAMS.struct_stage,
 )
 adl.setup("train")
+if len(adl.test_data) == 0:
+    raise ValueError(
+        f"{EVAL_KEY}: resolved test split is empty (0 samples) -- check the "
+        "FoldSeek clusters file and train/val/test percentages before trusting "
+        "any downstream metric."
+    )
 ads = adl.dataset
 
 # %% Load model
@@ -268,6 +275,7 @@ def compute_metric_single(key, target, pred):
             "gcc_mse": mse(target["gcc_lmi"], pred["gcc_lmi"]),
             "gcc_mae": mae(target["gcc_lmi"], pred["gcc_lmi"]),
             "gcc_im_dist": ipsen_mikhailov_distance(target["gcc_lmi"], pred["gcc_lmi"]),
+            "gcc_gdd": graph_diffusion_distance(target["gcc_lmi"], pred["gcc_lmi"]),
         }
     )
 
@@ -341,13 +349,28 @@ with open(valid_met_path, "rb") as f:
 with open(test_met_path, "rb") as f:
     test_metrics = pk.load(f)
 
-# %% Plot just PLANET_MD results
-logger.info("Plotting metrics...")
-fig, ax = plt.subplots(figsize=(8, 8))
 if args.split == "valid":
     plot_metrics = valid_metrics
 else:
     plot_metrics = test_metrics
+
+# %% Aggregate metrics to a single scalar summary per metric
+logger.info("Aggregating metrics...")
+summary = plot_metrics[
+    [
+        c
+        for c in plot_metrics.columns
+        if c.endswith(
+            ("_mse", "_mae", "_r", "_dist", "_gdd", "_kl_div", "_wasserstein")
+        )
+    ]
+].mean()
+logger.info(f"Aggregated {EVAL_KEY} metrics:\n{summary}")
+summary.to_csv(OUTPUT_DIRECTORY / f"{EVAL_KEY}_{args.split}_summary.csv")
+
+# %% Plot just PLANET_MD results
+logger.info("Plotting metrics...")
+fig, ax = plt.subplots(figsize=(8, 8))
 
 sns.boxplot(
     data=plot_metrics,
