@@ -4,6 +4,7 @@ channels:
   - pytorch
   - nvidia
   - bioconda
+  - schrodinger
 dependencies:
   - python=3.11
   - black
@@ -36,9 +37,11 @@ dependencies:
   - rdkit
   - wandb
   - foldseek
+  - pymol-open-source
   - pip:
       - python-dotenv
       - -e .
       - nglview
       - mdtraj
       - esm
+      - mdigest
