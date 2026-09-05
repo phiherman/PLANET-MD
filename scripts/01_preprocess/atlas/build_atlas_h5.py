@@ -39,7 +39,14 @@ with h5py.File(ATLAS_PROCESSED_DATA_DIR / "atlas_processed.h5", "r+") as h5file:
 
     # SHP
     def convert_to_normalized_shp(preshp, max_dim=len(FS_3DI_LIST)):
-        preshp = torch.tensor(preshp).squeeze()
+        preshp = torch.as_tensor(preshp)
+        # Only squeeze away *extra* dims beyond 2 -- a genuine (num_frames=1,
+        # seq_len) input (as produced by a single static-structure 3Di
+        # descriptor, not a multi-frame trajectory ensemble) must keep its
+        # frame axis, or plain .squeeze() collapses it to 1D and breaks the
+        # transpose below (RuntimeError: bincount only supports 1-d input).
+        if preshp.dim() > 2:
+            preshp = preshp.squeeze()
         shp = torch.stack([torch.bincount(i, minlength=max_dim) for i in preshp.T])
         shp = shp.T / shp.sum(axis=1)
         return shp.T
