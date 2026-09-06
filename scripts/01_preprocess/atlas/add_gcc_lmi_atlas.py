@@ -1,7 +1,17 @@
 # %% # Load packages
 
 import os
-from multiprocessing import Pool
+
+# Plan 01-08 rework (2026-09-06): must be set before numpy/MDAnalysis/mdigest
+# are imported anywhere in this process -- see process_atlas_cpu.py for the
+# full rationale (fork-inherited BLAS/OMP thread + lock deadlock, confirmed
+# on SLURM job 10203 via wchan=futex_wait_queue on every worker).
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+import multiprocessing
 
 import h5py
 from loguru import logger
@@ -11,27 +21,19 @@ from planet_md import config
 from planet_md.data.utils import update_h5_dataset
 from planet_md.trajectory import compute_generalized_correlation_lmi
 
+# Plan 01-08 rework: "spawn", not the default "fork" -- see
+# planet_md/parallel.py's _SPAWN_CTX comment for the full rationale. Requires
+# this script's dispatch logic to live behind `if __name__ == "__main__":`
+# below (spawn re-imports this file as a plain module in every worker).
+_SPAWN_CTX = multiprocessing.get_context("spawn")
+
 # %% Define file paths
-logger.info("Defining file paths")
 ATLAS_DATA_DIR = config.RAW_DATA_DIR / "atlas"
 ATLAS_PROCESSED_DATA_DIR = config.PROCESSED_DATA_DIR / "atlas"
 ATLAS_H5 = ATLAS_PROCESSED_DATA_DIR / "atlas_processed.h5"
-
-xtc_files = list(ATLAS_DATA_DIR.glob("*/*.xtc"))
-pdb_files = list(ATLAS_DATA_DIR.glob("*/*.pdb"))
-pdb_files = [i for i in pdb_files if ".ca.pdb" not in i.name]
 N_REPS = 3
 RANDOM_STATE = 42
 OVERWRITE_H5 = False
-# Plan 01-08 rework (2026-09-06): this was the single largest contributor to
-# SLURM job 10202's ~7-day projection (~55s/rep, ~76% of per-batch wall-clock,
-# fully serial). GCC-LMI computation (mdigest DynCorr, CPU-bound, no shared
-# state between (protein, rep) pairs) runs in a multiprocessing.Pool; the H5
-# write stays single-threaded in the main process (h5py is not safely
-# writable from multiple processes at once).
-N_JOBS = int(os.environ.get("SLURM_CPUS_PER_TASK", 4))
-
-# %% Compute derivatives and store
 
 
 def _compute_gcc_lmi(job):
@@ -40,24 +42,39 @@ def _compute_gcc_lmi(job):
     return pdb_code, rep, gcorr
 
 
-jobs = [
-    (
-        pdb_f.stem,
-        rep,
-        pdb_f,
-        ATLAS_DATA_DIR / pdb_f.stem[:2] / f"{pdb_f.stem}_prod_R{rep}_fit.xtc",
-    )
-    for pdb_f in pdb_files
-    for rep in range(1, N_REPS + 1)
-]
+def main() -> None:
+    logger.info("Defining file paths")
+    pdb_files = list(ATLAS_DATA_DIR.glob("*/*.pdb"))
+    pdb_files = [i for i in pdb_files if ".ca.pdb" not in i.name]
 
-logger.info(f"Computing GCC-LMI for {len(jobs)} (protein, rep) pairs across {N_JOBS} worker processes")
-# Pool created before the H5 file is opened, so forked workers never inherit
-# an open HDF5 file handle -- only the parent process ever touches ATLAS_H5.
-with Pool(processes=N_JOBS) as pool, h5py.File(ATLAS_H5, "r+") as h5file:
-    for pdb_code, rep, gcorr in tqdm(
-        pool.imap_unordered(_compute_gcc_lmi, jobs),
-        total=len(jobs),
-        desc="Computing GCC-LMI",
-    ):
-        update_h5_dataset(h5file, f"{pdb_code}/R{rep}/gcc_lmi", gcorr, overwrite=True)
+    # Plan 01-08 rework (2026-09-06): this was the single largest contributor
+    # to SLURM job 10202's ~7-day projection (~55s/rep, ~76% of per-batch
+    # wall-clock, fully serial). GCC-LMI computation (mdigest DynCorr,
+    # CPU-bound, no shared state between (protein, rep) pairs) runs in a
+    # multiprocessing.Pool; the H5 write stays single-threaded in the parent
+    # process (h5py is not safely writable from multiple processes at once).
+    n_jobs = int(os.environ.get("SLURM_CPUS_PER_TASK", 4))
+
+    jobs = [
+        (
+            pdb_f.stem,
+            rep,
+            pdb_f,
+            ATLAS_DATA_DIR / pdb_f.stem[:2] / f"{pdb_f.stem}_prod_R{rep}_fit.xtc",
+        )
+        for pdb_f in pdb_files
+        for rep in range(1, N_REPS + 1)
+    ]
+
+    logger.info(f"Computing GCC-LMI for {len(jobs)} (protein, rep) pairs across {n_jobs} worker processes")
+    with _SPAWN_CTX.Pool(processes=n_jobs) as pool, h5py.File(ATLAS_H5, "r+") as h5file:
+        for pdb_code, rep, gcorr in tqdm(
+            pool.imap_unordered(_compute_gcc_lmi, jobs),
+            total=len(jobs),
+            desc="Computing GCC-LMI",
+        ):
+            update_h5_dataset(h5file, f"{pdb_code}/R{rep}/gcc_lmi", gcorr, overwrite=True)
+
+
+if __name__ == "__main__":
+    main()

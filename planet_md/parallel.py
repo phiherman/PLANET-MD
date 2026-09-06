@@ -1,8 +1,24 @@
+import multiprocessing
 from itertools import count
-from multiprocessing import Pool
 
 from loguru import logger
 from tqdm import tqdm
+
+# Plan 01-08 rework (2026-09-06): the default "fork" start method duplicates
+# the calling process's live threads (e.g. numpy/OpenBLAS/OMP internal thread
+# pools) into every worker. If any such thread held a lock at the instant
+# fork() ran, every worker inherits that lock already held -- by a thread
+# that no longer exists in the child -- and deadlocks forever the first time
+# it needs that lock. This is exactly what happened to SLURM job 10203: every
+# worker showed wchan=futex_wait_queue with zero further CPU progress.
+# "spawn" starts each worker as a fresh interpreter (re-importing modules,
+# no inherited thread/lock state), which eliminates this class of bug at the
+# cost of a small per-worker startup overhead. Callers using this function
+# from a top-level script MUST guard that script's entry point with
+# `if __name__ == "__main__":` -- spawn re-imports the calling module in each
+# worker, so top-level side effects (argv parsing, re-dispatching work) must
+# not live outside that guard.
+_SPAWN_CTX = multiprocessing.get_context("spawn")
 
 
 def create_batches(dataset, batch_size):
@@ -70,7 +86,7 @@ def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=Non
         (i, [item], process_fn, report_every) for i, item in zip(count(), dataset)
     )
 
-    with Pool(processes=n_jobs) as pool:
+    with _SPAWN_CTX.Pool(processes=n_jobs) as pool:
         results = []
         for batch_results in tqdm(
             pool.imap(process_batch_wrapper, job_args),
