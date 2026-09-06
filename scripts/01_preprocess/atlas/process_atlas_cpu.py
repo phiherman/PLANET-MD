@@ -1,13 +1,14 @@
 # %% # Load packages
 import gc
+import os
 import sys
 
 import mdtraj as md
 from datasets import Dataset
 from loguru import logger
-from tqdm import tqdm
 
 from planet_md import config
+from planet_md.parallel import parallel_pool
 from planet_md.trajectory import (
     compute_autocorrelation,
     compute_contacts,
@@ -44,6 +45,13 @@ I_STOP = int(sys.argv[2])
 # directory-already-exists check. Defaults to the old "{I_START}_{I_STOP}"
 # naming for backward compatibility with a single, non-batched invocation.
 BATCH_LABEL = sys.argv[3] if len(sys.argv) > 3 else f"{I_START}_{I_STOP}"
+# Plan 01-08 rework (2026-09-06): ThreadPoolExecutor was never used here --
+# this loop was fully serial (see "Just do serial to not deal with memory
+# issues" below), the actual cause of SLURM job 10202's ~7-day projection
+# with 15/16 allocated CPUs idle. Defaults to the SLURM allocation
+# (multiprocessing.Pool, real separate processes -- not threads, which the
+# GIL would prevent from parallelizing this CPU-bound MDTraj/mdigest work).
+N_JOBS = int(sys.argv[4]) if len(sys.argv) > 4 else int(os.environ.get("SLURM_CPUS_PER_TASK", 4))
 
 # %% Define process function
 
@@ -115,15 +123,6 @@ pdb_reps = [(pdb_code, rep) for pdb_code in pdb_codes for rep in range(1, N_REPS
 ]
 TOTAL_JOBS = len(pdb_reps)
 
-# %% Compute values in parallel
-# N_JOBS = 50
-# BATCH_SIZE = 1
-
-# logger.info(f"Computing {TOTAL_JOBS} reps in parallel ({N_JOBS} workers, batch size {BATCH_SIZE})")
-# results = parallel_pool(pdb_reps, compute_batched_trajectory_derivatives, n_jobs=N_JOBS, batch_size=BATCH_SIZE, report_every=1)
-# logger.info(f"Finished processing {len(results)} reps")
-
-
 # %% Invert Dicts
 def invert_dict(l):
     """
@@ -136,12 +135,13 @@ def invert_dict(l):
     return out_dict
 
 
-# %% Just do serial to not deal with memory issues
-results = []
-logger.info(f"Computing {TOTAL_JOBS} reps")
-for pdb_id in tqdm(pdb_reps):
-    # results.append(compute_trajectory_derivatives(pdb_id))
-    results.append(compute_trajectory_derivatives(pdb_id))
+# %% Compute in parallel (multiprocessing.Pool -- real separate processes,
+# each independently loads its own trajectory, so no shared-memory risk;
+# n_jobs bounds concurrent resident trajectories, the original memory concern).
+logger.info(f"Computing {TOTAL_JOBS} reps across {N_JOBS} worker processes")
+results = parallel_pool(
+    pdb_reps, compute_batched_trajectory_derivatives, n_jobs=N_JOBS, report_every=50
+)
 # %% # Create HuggingFace dataset
 
 logger.info("Creating HuggingFace dataset")
