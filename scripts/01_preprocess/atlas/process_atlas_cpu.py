@@ -3,7 +3,7 @@ import gc
 import sys
 
 import mdtraj as md
-from datasets import Dataset, concatenate_datasets
+from datasets import Dataset
 from loguru import logger
 from tqdm import tqdm
 
@@ -32,6 +32,18 @@ RANDOM_STATE = 42
 OVERWRITE_H5 = False
 I_START = int(sys.argv[1])
 I_STOP = int(sys.argv[2])
+# Plan 01-08 (full-dataset batched run): an optional 3rd CLI arg names this
+# invocation's output dataset uniquely (e.g. "batch0003"). Without this, every
+# per-batch invocation of this script under the mandatory streaming/batching
+# architecture (Plan 01-07's checkpoint) would write to the same
+# atlas_derivatives_v2_{I_START}_{I_STOP} directory whenever two batches
+# happen to have the same size (I_START/I_STOP are always local indices into
+# whatever's currently in RAW_DATA_DIR/atlas, i.e. just the current batch,
+# since prior batches' raw files are deleted before the next download) --
+# silently overwriting or crashing on Dataset.save_to_disk's
+# directory-already-exists check. Defaults to the old "{I_START}_{I_STOP}"
+# naming for backward compatibility with a single, non-batched invocation.
+BATCH_LABEL = sys.argv[3] if len(sys.argv) > 3 else f"{I_START}_{I_STOP}"
 
 # %% Define process function
 
@@ -135,27 +147,28 @@ for pdb_id in tqdm(pdb_reps):
 logger.info("Creating HuggingFace dataset")
 ds = Dataset.from_dict(invert_dict(results))
 logger.info(f"Dataset created with {len(ds)} samples")
-out_path = ATLAS_PROCESSED_DATA_DIR / f"atlas_derivatives_v2_{I_START}_{I_STOP}"
+out_path = ATLAS_PROCESSED_DATA_DIR / f"atlas_derivatives_v2_{BATCH_LABEL}"
 logger.info(f"Saving dataset to {out_path}")
+if out_path.exists():
+    # Re-running the same batch label (e.g. after a crash) should overwrite
+    # its own prior (possibly partial) output, not crash on
+    # save_to_disk's directory-already-exists check.
+    import shutil
+
+    shutil.rmtree(out_path)
 ds.save_to_disk(str(out_path))
-# logger.info(f"Saved to {out_path}")
 
 # %% Join data sets from different initializations
-# NOTE: `subsets` must list every (I_START, I_STOP) chunk range this run actually
-# produced -- update it per-invocation to match the ranges passed on the command
-# line (Plan 01-08's full-dataset run will have a different, longer list than the
-# single-chunk tracer range below).
-logger.info("Joining datasets")
-
-subsets = [
-    (I_START, I_STOP),
-]
-all_ds = []
-for s0, s1 in subsets:
-    ds = Dataset.load_from_disk(
-        str(ATLAS_PROCESSED_DATA_DIR / f"atlas_derivatives_v2_{s0}_{s1}")
-    )
-    all_ds.append(ds)
-
-all_ds = concatenate_datasets(all_ds)
-all_ds.save_to_disk(str(ATLAS_PROCESSED_DATA_DIR / "atlas_derivatives_v2"))
+# NOTE (Plan 01-08): the single-invocation join into a shared
+# "atlas_derivatives_v2" was removed here -- under the mandatory batched
+# streaming architecture (Plan 01-07's checkpoint), this script runs once per
+# batch (see run_full_atlas_pipeline.py), so joining per-invocation would
+# either crash (Dataset.save_to_disk refuses an existing directory) or
+# silently clobber every prior batch's join with only the latest batch's data.
+# The cross-batch join now happens exactly once, after all batches complete,
+# in run_full_atlas_pipeline.py's join_all_batches() (or manually via
+# `datasets.concatenate_datasets` over every atlas_derivatives_v2_batch*
+# directory) -- matching Task 2 step 2's "once all chunk jobs complete, join
+# every ... output" instruction, just performed by the orchestrating driver
+# rather than by this per-chunk script itself.
+logger.info(f"Batch {BATCH_LABEL} derivatives saved to {out_path} (cross-batch join happens once, after all batches, in run_full_atlas_pipeline.py)")

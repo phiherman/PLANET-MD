@@ -1,4 +1,6 @@
 # %%
+import sys
+
 import h5py
 import torch
 from datasets import Dataset
@@ -13,17 +15,26 @@ ATLAS_PROCESSED_DATA_DIR = config.PROCESSED_DATA_DIR / "atlas"
 ATLAS_H5 = ATLAS_PROCESSED_DATA_DIR / "atlas_processed.h5"
 FS_3DI_DIR = ATLAS_PROCESSED_DATA_DIR / "3di"
 
+# Plan 01-08: accept an optional CLI arg naming which derivatives dataset to
+# write into the H5 -- defaults to the final joined "atlas_derivatives_v2" for
+# a single-shot/non-batched run, but the full-dataset batched pipeline
+# (run_full_atlas_pipeline.py) passes "atlas_derivatives_v2_batchNNNN" so each
+# batch's rows get written into the persistent, cumulative atlas_processed.h5
+# immediately, before that batch's raw trajectories are deleted (mandatory
+# streaming architecture, Plan 01-07's checkpoint).
+DERIVATIVES_DATASET_NAME = sys.argv[1] if len(sys.argv) > 1 else "atlas_derivatives_v2"
 atlas_derivatives_data = Dataset.load_from_disk(
-    str(ATLAS_PROCESSED_DATA_DIR / "atlas_derivatives_v2")
+    str(ATLAS_PROCESSED_DATA_DIR / DERIVATIVES_DATASET_NAME)
 )
 # NOTE (tracer, Plan 01-04): the pre-built `esm_shp/dataset` and `fs_shp/dataset`
 # HuggingFace Datasets the original SHP block below assumed do not exist for a
 # from-scratch run (RESEARCH.md D-02 -- no preprocessed intermediates ship
 # anywhere). This tracer reads the single `.3di` FoldSeek descriptor file
-# directly instead (see the "SHP" block below). Plan 01-08 must decide whether
-# to keep this direct-3di-to-H5 approach at full scale or reconstruct the
-# intermediate `fs_shp`/`esm_shp` dataset-building step this script originally
-# assumed existed.
+# directly instead (see the "SHP" block below). Plan 01-08 (full scale):
+# confirmed keeping this direct-3di-to-H5 approach -- SHP is structure-only
+# (identical across a protein's 3 reps), and no `fs_shp`/`esm_shp`
+# intermediate dataset exists anywhere to reconstruct from, so a per-protein
+# direct `.3di` read remains the only available approach at full scale too.
 
 # %%
 # Build file
