@@ -19,19 +19,26 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import gc
 import sys
+from itertools import combinations
 
 import mdtraj as md
+import numpy as np
 from datasets import Dataset
 from loguru import logger
 
 from planet_md import config
 from planet_md.parallel import parallel_pool
 from planet_md.trajectory import (
-    compute_autocorrelation,
-    compute_contacts,
+    compute_ca_dist_and_autocorrelation_from_compact,
     compute_rmsf,
     normalize,
 )
+
+# Plan 01-08 rework (2026-09-07): chains at/above this residue count use a
+# separate, low-concurrency pass (see main()) -- see LARGE_RESIDUE_THRESHOLD's
+# comment there for why.
+LARGE_RESIDUE_THRESHOLD = 400
+LARGE_PROTEIN_WORKERS = 2
 
 # %% Define file paths
 ATLAS_DATA_DIR = config.RAW_DATA_DIR / "atlas"
@@ -61,13 +68,20 @@ def compute_trajectory_derivatives(pdb_id):
     traj = normalize(traj, ca_only=True)
     rmsf = compute_rmsf(traj, normalized=True, ca_only=True)
 
-    contacts = compute_contacts(
-        traj, scheme="ca", ignore_nonprotein=True, normalized=True, ca_only=True
+    # Memory-efficient contacts (Plan 01-08 rework, 2026-09-07): the compact
+    # (non-squareform) form from md.compute_contacts is HALF the size of the
+    # full (n_frames, n_res, n_res) squareform tensor compute_contacts()
+    # would produce -- no symmetric duplication. See
+    # compute_ca_dist_and_autocorrelation_from_compact()'s docstring for why
+    # this matters (a real memory-exhaustion incident on staging-server).
+    d, pairs = md.compute_contacts(
+        traj,
+        contacts=list(combinations(np.arange(traj.n_residues), 2)),
+        scheme="ca",
+        ignore_nonprotein=True,
     )
-
-    ca_dist = contacts[0]
-    autocorr = compute_autocorrelation(
-        traj, precomputed_contacts=contacts, normalized=True, ca_only=True
+    ca_dist, autocorr = compute_ca_dist_and_autocorrelation_from_compact(
+        d, pairs, traj.n_residues
     )
 
     r = {
@@ -81,7 +95,7 @@ def compute_trajectory_derivatives(pdb_id):
     }
 
     # Explicit cleanup
-    del traj, contacts, rmsf, ca_dist, autocorr
+    del traj, d, pairs, rmsf, ca_dist, autocorr
     gc.collect()  # Force garbage collection
 
     return r
@@ -138,14 +152,46 @@ def main() -> None:
     ]
     total_jobs = len(pdb_reps)
 
-    # Compute in parallel (multiprocessing.Pool, "spawn" context -- real
-    # separate processes, each independently loads its own trajectory, so no
-    # shared-memory risk; n_jobs bounds concurrent resident trajectories, the
-    # original memory concern).
-    logger.info(f"Computing {total_jobs} reps across {n_jobs} worker processes")
-    results = parallel_pool(
-        pdb_reps, compute_batched_trajectory_derivatives, n_jobs=n_jobs, report_every=50
-    )
+    # Plan 01-08 rework (2026-09-07): the per-item memory cost of
+    # RMSF/CA-dist/autocorr scales as O(n_frames * n_residues^2) (a dense
+    # per-residue-pair time series). Confirmed live on staging-server: with
+    # ATLAS chains up to ~1000 residues (10001-frame trajectories), a SINGLE
+    # such chain's compact contacts array is ~20GB; running the full 16-way
+    # pool with several large chains landing concurrently drove combined
+    # worker RSS to 208GB against a 64GB SLURM allocation, pushed the shared
+    # node's swap to 99% full, and made the run LOOK hung (multi-hour zero
+    # CPU progress) when it was really thrashing -- not a deadlock, not a
+    # multiprocessing bug (this recurred identically under both "fork" and
+    # "spawn" contexts, ruling that out). Large chains get a small dedicated
+    # pool (bounded worst case: LARGE_PROTEIN_WORKERS * ~20GB, safely under
+    # the 64GB allocation); everything else keeps full n_jobs concurrency
+    # (worst case: n_jobs * ~5GB for a ~400-residue chain, also safely under
+    # budget). The two passes run sequentially, so their peaks never stack.
+    pdb_n_residues = {}
+    for pdb_code in {c for c, _ in pdb_reps}:
+        pdb_f = ATLAS_DATA_DIR / pdb_code[:2] / f"{pdb_code}.pdb"
+        pdb_n_residues[pdb_code] = md.load(str(pdb_f)).n_residues
+
+    large_reps = [pr for pr in pdb_reps if pdb_n_residues[pr[0]] >= LARGE_RESIDUE_THRESHOLD]
+    small_reps = [pr for pr in pdb_reps if pdb_n_residues[pr[0]] < LARGE_RESIDUE_THRESHOLD]
+
+    results = []
+    if large_reps:
+        logger.info(
+            f"{len(large_reps)}/{total_jobs} reps from chains >={LARGE_RESIDUE_THRESHOLD} "
+            f"residues: processing with {LARGE_PROTEIN_WORKERS} workers (memory-bounded)"
+        )
+        results += parallel_pool(
+            large_reps,
+            compute_batched_trajectory_derivatives,
+            n_jobs=min(LARGE_PROTEIN_WORKERS, n_jobs),
+            report_every=10,
+        )
+    if small_reps:
+        logger.info(f"{len(small_reps)}/{total_jobs} remaining reps across {n_jobs} worker processes")
+        results += parallel_pool(
+            small_reps, compute_batched_trajectory_derivatives, n_jobs=n_jobs, report_every=50
+        )
 
     logger.info("Creating HuggingFace dataset")
     ds = Dataset.from_dict(invert_dict(results))

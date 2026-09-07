@@ -191,6 +191,40 @@ def compute_autocorrelation(
         correlations[c_j, c_i] = corrs_[lag]
     return correlations
 
+
+def compute_ca_dist_and_autocorrelation_from_compact(
+    d: np.ndarray,
+    pairs: np.ndarray,
+    n_residues: int,
+    lag: int = 1,
+):
+    """Memory-efficient equivalent of `contacts[0]` (ca_dist) + `compute_autocorrelation()`,
+    consuming the COMPACT (non-squareform) per-pair distance array `d` and its
+    `pairs` index directly from `md.compute_contacts()`, instead of the
+    O(n_frames * n_residues^2) squareform tensor `compute_contacts()` (this
+    module) would otherwise require. `md.geometry.squareform()` duplicates
+    every off-diagonal pair (stores both (i,j) and (j,i)) for EVERY frame --
+    for ATLAS's largest chains (~1000 residues, 10001 frames), that tensor
+    alone is 40+ GB; running several such chains concurrently under
+    multiprocessing.Pool exhausted a shared HPC node's memory (2026-09-07).
+    ca_dist only ever needs frame 0 (squareforming one frame is cheap);
+    autocorrelation only ever needs each pair's own time series, which the
+    compact array already provides via `d[:, k]` for `pairs[k] == (c_i, c_j)`
+    -- the full squareform tensor was never actually necessary. Numerically
+    identical to `contacts[0]` / `compute_autocorrelation(precomputed_contacts=
+    squareform(d, pairs))`: same input values, same acf() calls, just without
+    the redundant symmetric storage.
+
+    Returns: (ca_dist, autocorrelations), both shape (n_residues, n_residues).
+    """
+    ca_dist = md.geometry.squareform(d[:1], pairs)[0]
+    correlations = np.zeros((n_residues, n_residues))
+    for k, (c_i, c_j) in enumerate(pairs):
+        corrs_ = acf(d[:, k], nlags=d.shape[0] - 1, fft=True)
+        correlations[c_i, c_j] = corrs_[lag]
+        correlations[c_j, c_i] = corrs_[lag]
+    return ca_dist, correlations
+
 def seq_list_to_tensor(seq_list):
     max_len = max([len(i) for i in seq_list])
     seq_tensor = torch.zeros(len(seq_list), max_len, dtype=torch.long)
