@@ -3,9 +3,14 @@
 import os
 
 # Plan 01-08 rework (2026-09-06): must be set before numpy/MDAnalysis/mdigest
-# are imported anywhere in this process -- see process_atlas_cpu.py for the
-# full rationale (fork-inherited BLAS/OMP thread + lock deadlock, confirmed
-# on SLURM job 10203 via wchan=futex_wait_queue on every worker).
+# are imported anywhere in this process -- avoids BLAS/OMP thread
+# oversubscription now that 16 worker processes already parallelize across
+# the SLURM allocation. NOTE (2026-09-07): see process_atlas_cpu.py's
+# corrected note -- the "fork-inherited lock deadlock" theory this comment
+# originally cited was wrong; job 10203/10204's real cause was memory
+# exhaustion under full concurrency (confirmed separately for this script:
+# combined worker RSS grew from 51GB to 154GB in 6 minutes on a live run --
+# see main()'s maxtasksperchild comment for the fix).
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -67,7 +72,17 @@ def main() -> None:
     ]
 
     logger.info(f"Computing GCC-LMI for {len(jobs)} (protein, rep) pairs across {n_jobs} worker processes")
-    with _SPAWN_CTX.Pool(processes=n_jobs) as pool, h5py.File(ATLAS_H5, "r+") as h5file:
+    # Plan 01-08 rework (2026-09-07): confirmed live -- combined worker RSS
+    # grew ~linearly (51GB -> 154GB over 6 minutes, aborted before it could
+    # exhaust the shared node) even though a SINGLE largest-protein call
+    # peaks at only ~4GB. That pattern (steady growth with task count, not a
+    # few large outliers) points to per-task memory not being fully released
+    # inside mdigest/MDAnalysis's DynCorr/Universe objects across repeated
+    # calls within the same long-lived worker. maxtasksperchild recycles each
+    # worker process after a bounded number of tasks, so any such
+    # accumulation is reclaimed by the OS when the worker exits, instead of
+    # growing for the life of the whole run.
+    with _SPAWN_CTX.Pool(processes=n_jobs, maxtasksperchild=10) as pool, h5py.File(ATLAS_H5, "r+") as h5file:
         for pdb_code, rep, gcorr in tqdm(
             pool.imap_unordered(_compute_gcc_lmi, jobs),
             total=len(jobs),

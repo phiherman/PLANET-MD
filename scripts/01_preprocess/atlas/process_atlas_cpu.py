@@ -5,13 +5,18 @@ import os
 # imported anywhere in this process. With 16 worker processes already
 # parallelizing across the SLURM allocation's CPUs, each worker ALSO letting
 # OpenBLAS/MKL/OMP spin up its own internal thread pool oversubscribes the
-# machine (16 workers x N BLAS threads > allocated CPUs) and -- more
-# seriously -- leaves live background threads in the parent process at the
-# moment multiprocessing.Pool forks workers. A thread frozen mid-lock by
-# fork() is inherited by every child in that locked state forever, which is
-# what caused SLURM job 10203 to deadlock (confirmed: every worker showed
-# wchan=futex_wait_queue with zero CPU progress). Pinning every BLAS/OMP
-# backend to 1 thread removes the extra background threads entirely.
+# machine (16 workers x N BLAS threads > allocated CPUs). NOTE (2026-09-07):
+# this was originally written believing it also explained SLURM job 10203's
+# apparent deadlock (fork()-inherited, already-locked BLAS thread) -- that
+# theory was WRONG. Job 10204 hit the identical wchan=futex_wait_queue /
+# zero-CPU-progress symptom AFTER switching to the "spawn" context (which
+# does not inherit parent threads at all), proving fork-inherited locks were
+# never the cause. The real cause was memory exhaustion / swap thrashing from
+# compute_contacts' per-item footprint under full concurrency -- see main()'s
+# LARGE_RESIDUE_THRESHOLD comment and planet_md.trajectory's
+# compute_ca_dist_and_autocorrelation_from_compact() docstring for the actual
+# incident and fix. Kept anyway: pinning BLAS/OMP to 1 thread each is still a
+# real, independent improvement (avoids the oversubscription noted above).
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("OMP_NUM_THREADS", "1")

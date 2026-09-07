@@ -6,18 +6,22 @@ from tqdm import tqdm
 
 # Plan 01-08 rework (2026-09-06): the default "fork" start method duplicates
 # the calling process's live threads (e.g. numpy/OpenBLAS/OMP internal thread
-# pools) into every worker. If any such thread held a lock at the instant
-# fork() ran, every worker inherits that lock already held -- by a thread
-# that no longer exists in the child -- and deadlocks forever the first time
-# it needs that lock. This is exactly what happened to SLURM job 10203: every
-# worker showed wchan=futex_wait_queue with zero further CPU progress.
-# "spawn" starts each worker as a fresh interpreter (re-importing modules,
-# no inherited thread/lock state), which eliminates this class of bug at the
-# cost of a small per-worker startup overhead. Callers using this function
-# from a top-level script MUST guard that script's entry point with
-# `if __name__ == "__main__":` -- spawn re-imports the calling module in each
-# worker, so top-level side effects (argv parsing, re-dispatching work) must
-# not live outside that guard.
+# pools) into every worker, which COULD in principle deadlock a child that
+# inherits a lock already held by a thread that no longer exists post-fork.
+# This was originally (wrongly) believed to be why SLURM job 10203 froze
+# (every worker showing wchan=futex_wait_queue, zero CPU progress). It
+# wasn't: job 10204, run under this exact "spawn" context (which shares no
+# thread/lock state with the parent at all), hit the IDENTICAL symptom --
+# the real cause was memory exhaustion / swap thrashing under full
+# concurrency (see scripts/01_preprocess/atlas/process_atlas_cpu.py and
+# add_gcc_lmi_atlas.py for the actual incident and fix: a per-item memory
+# footprint too large to run many-at-once, not a multiprocessing bug).
+# "spawn" is kept anyway -- it remains strictly safer than "fork" for a
+# process with live background threads, it just wasn't THE bug here. Callers
+# using this function from a top-level script MUST guard that script's entry
+# point with `if __name__ == "__main__":` -- spawn re-imports the calling
+# module in each worker, so top-level side effects (argv parsing,
+# re-dispatching work) must not live outside that guard.
 _SPAWN_CTX = multiprocessing.get_context("spawn")
 
 
@@ -48,7 +52,7 @@ def process_batch_wrapper(args):
         return []
 
 
-def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=None):
+def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=None, maxtasksperchild=20):
     """
     Process an h5 file in parallel using a process pool.
 
@@ -58,6 +62,11 @@ def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=Non
         n_jobs: Number of parallel jobs to run
         batch_size: Size of batches to process
         report_every: How often to report progress (None for no reporting)
+        maxtasksperchild: Recycle each worker after this many tasks (Plan
+            01-08 rework, 2026-09-07 -- confirmed live that per-task memory in
+            MDTraj/mdigest/MDAnalysis compute paths isn't always fully
+            released within a long-lived worker; periodic recycling bounds
+            the accumulation instead of letting it grow for the whole run)
 
     Returns:
         List of results from all batches, flattened
@@ -86,7 +95,7 @@ def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=Non
         (i, [item], process_fn, report_every) for i, item in zip(count(), dataset)
     )
 
-    with _SPAWN_CTX.Pool(processes=n_jobs) as pool:
+    with _SPAWN_CTX.Pool(processes=n_jobs, maxtasksperchild=maxtasksperchild) as pool:
         results = []
         for batch_results in tqdm(
             pool.imap(process_batch_wrapper, job_args),
