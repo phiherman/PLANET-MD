@@ -52,7 +52,7 @@ def process_batch_wrapper(args):
         return []
 
 
-def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=None, maxtasksperchild=20):
+def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=None, chunk_size=100):
     """
     Process an h5 file in parallel using a process pool.
 
@@ -62,11 +62,20 @@ def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=Non
         n_jobs: Number of parallel jobs to run
         batch_size: Size of batches to process
         report_every: How often to report progress (None for no reporting)
-        maxtasksperchild: Recycle each worker after this many tasks (Plan
-            01-08 rework, 2026-09-07 -- confirmed live that per-task memory in
-            MDTraj/mdigest/MDAnalysis compute paths isn't always fully
-            released within a long-lived worker; periodic recycling bounds
-            the accumulation instead of letting it grow for the whole run)
+        chunk_size: Process the dataset in chunks of this size, opening a
+            completely fresh Pool per chunk (Plan 01-08 rework, 2026-09-07).
+            Confirmed live that per-task memory in MDTraj/mdigest/MDAnalysis
+            compute paths isn't always fully released within a long-lived
+            worker. First mitigation tried was Pool(maxtasksperchild=N)
+            (multiprocessing's own internal worker-recycling) -- it worked in
+            isolated tests but DEADLOCKED on a real run (every worker AND the
+            parent frozen on wchan=futex_wait_queue, memory stable/not
+            exhausted at the time -- almost certainly an intermittent issue
+            in Pool's internal recycling bookkeeping, not this codebase's
+            compute functions). Chunking sidesteps that entirely: exiting a
+            `with Pool(...):` block terminates and reaps every worker in it
+            outright, so the OS reclaims everything between chunks with no
+            partial-recycling state for a race to hide in.
 
     Returns:
         List of results from all batches, flattened
@@ -91,18 +100,20 @@ def parallel_pool(dataset, process_fn, n_jobs=4, batch_size=32, report_every=Non
     # return list(chain.from_iterable(results))
 
     total_items = len(dataset)
-    job_args = (
-        (i, [item], process_fn, report_every) for i, item in zip(count(), dataset)
-    )
-
-    with _SPAWN_CTX.Pool(processes=n_jobs, maxtasksperchild=maxtasksperchild) as pool:
-        results = []
-        for batch_results in tqdm(
-            pool.imap(process_batch_wrapper, job_args),
-            total=total_items,
-            desc="Processing items",
-        ):
-            for r in batch_results:
-                results.append(r)
+    results = []
+    for chunk_start in range(0, total_items, chunk_size):
+        chunk = dataset[chunk_start : chunk_start + chunk_size]
+        job_args = (
+            (chunk_start + i, [item], process_fn, report_every)
+            for i, item in zip(count(), chunk)
+        )
+        with _SPAWN_CTX.Pool(processes=n_jobs) as pool:
+            for batch_results in tqdm(
+                pool.imap(process_batch_wrapper, job_args),
+                total=len(chunk),
+                desc=f"Processing items {chunk_start}-{chunk_start + len(chunk)}/{total_items}",
+            ):
+                for r in batch_results:
+                    results.append(r)
 
     return results

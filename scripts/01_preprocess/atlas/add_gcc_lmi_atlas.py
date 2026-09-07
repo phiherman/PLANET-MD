@@ -78,17 +78,39 @@ def main() -> None:
     # peaks at only ~4GB. That pattern (steady growth with task count, not a
     # few large outliers) points to per-task memory not being fully released
     # inside mdigest/MDAnalysis's DynCorr/Universe objects across repeated
-    # calls within the same long-lived worker. maxtasksperchild recycles each
-    # worker process after a bounded number of tasks, so any such
-    # accumulation is reclaimed by the OS when the worker exits, instead of
-    # growing for the life of the whole run.
-    with _SPAWN_CTX.Pool(processes=n_jobs, maxtasksperchild=10) as pool, h5py.File(ATLAS_H5, "r+") as h5file:
-        for pdb_code, rep, gcorr in tqdm(
-            pool.imap_unordered(_compute_gcc_lmi, jobs),
-            total=len(jobs),
-            desc="Computing GCC-LMI",
-        ):
-            update_h5_dataset(h5file, f"{pdb_code}/R{rep}/gcc_lmi", gcorr, overwrite=True)
+    # calls within the same long-lived worker.
+    #
+    # First attempt: Pool(maxtasksperchild=10), relying on multiprocessing's
+    # own internal worker-recycling to reclaim memory periodically. That
+    # WORKED in two isolated tests (18 items, then a real 900-item run) but
+    # DEADLOCKED on a third real run -- every worker AND the parent process
+    # frozen on wchan=futex_wait_queue with zero CPU progress, memory stable
+    # (not exhausted) at the time. maxtasksperchild's internal task-count
+    # bookkeeping/respawn machinery is the most likely culprit (a known class
+    # of intermittent multiprocessing.Pool issue, not something specific to
+    # this codebase) -- but confirming that exactly would need tooling this
+    # environment doesn't have (py-spy unavailable). Rather than keep
+    # debugging an internal library mechanism, this replaces it with
+    # something whose correctness doesn't depend on Pool-internal state:
+    # process in CHUNKS, opening a completely FRESH Pool per chunk. Exiting
+    # a `with Pool(...):` block terminates and reaps every worker in that
+    # pool outright, so the OS reclaims everything between chunks -- no
+    # partial-recycling bookkeeping for a race to hide in.
+    chunk_size = 100
+    with h5py.File(ATLAS_H5, "r+") as h5file:
+        for chunk_start in range(0, len(jobs), chunk_size):
+            chunk = jobs[chunk_start : chunk_start + chunk_size]
+            logger.info(
+                f"GCC-LMI chunk {chunk_start}-{chunk_start + len(chunk)} of {len(jobs)} "
+                f"(fresh {n_jobs}-worker pool)"
+            )
+            with _SPAWN_CTX.Pool(processes=n_jobs) as pool:
+                for pdb_code, rep, gcorr in tqdm(
+                    pool.imap_unordered(_compute_gcc_lmi, chunk),
+                    total=len(chunk),
+                    desc=f"GCC-LMI chunk {chunk_start // chunk_size}",
+                ):
+                    update_h5_dataset(h5file, f"{pdb_code}/R{rep}/gcc_lmi", gcorr, overwrite=True)
 
 
 if __name__ == "__main__":
