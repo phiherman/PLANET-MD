@@ -21,7 +21,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --ntasks=1
-#SBATCH --mem=64GB
+#SBATCH --mem=96GB
 #SBATCH --output=%x.%j.out
 #SBATCH --error=%x.%j.err
 

@@ -43,7 +43,15 @@ from planet_md.trajectory import (
 # separate, low-concurrency pass (see main()) -- see LARGE_RESIDUE_THRESHOLD's
 # comment there for why.
 LARGE_RESIDUE_THRESHOLD = 400
-LARGE_PROTEIN_WORKERS = 2
+# 3 workers x this batch's worst case (1gte_D, 1025 residues, ~21GB compact
+# form) = ~63GB peak -- verified batch0000 never exceeded 40GB at 2 workers,
+# and the node has 251GB physical (SLURM's --mem isn't actually enforced on
+# this cluster; 251GB physical, shared with other users, is the real
+# ceiling). Bumped from 2 -> 3 (2026-09-07) after batch0000 completed cleanly
+# at 2, trading some margin for ~33% less wall-clock on this phase across the
+# remaining 6 batches. If a future batch's largest chain is bigger than
+# 1gte_D, re-derive this bound rather than assuming it still holds.
+LARGE_PROTEIN_WORKERS = 3
 
 # %% Define file paths
 ATLAS_DATA_DIR = config.RAW_DATA_DIR / "atlas"
